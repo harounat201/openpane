@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OpenPane — Generate Icons</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; background: #f8fafc; }
+    h2 { margin-bottom: 16px; font-size: 16px; color: #1e293b; }
+    .grid { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+    .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    canvas { border-radius: 20%; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+    a { font-size: 12px; color: #6366f1; text-decoration: none; font-weight: 500; }
+    a:hover { text-decoration: underline; }
+    p { font-size: 13px; color: #64748b; max-width: 480px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h2>OpenPane Icon Generator</h2>
+  <p>Open this file in Chrome, then click each download link to save the icons to this folder (<code>icons/</code>). After downloading all four, reload the extension in <code>chrome://extensions</code>.</p>
+  <div class="grid" id="grid"></div>
+
+  <script>
+    const sizes = [16, 32, 48, 128];
+
+    function drawIcon(size) {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      // Background
+      const r = size * 0.22;
+      ctx.beginPath();
+      ctx.roundRect(0, 0, size, size, r);
+      const grad = ctx.createLinearGradient(0, 0, size, size);
+      grad.addColorStop(0, '#6366f1');
+      grad.addColorStop(1, '#4f46e5');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // ECG / pulse line icon
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = Math.max(1.5, size * 0.085);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const pad = size * 0.18;
+      const mid = size / 2;
+      const w = size - pad * 2;
+      const h = size * 0.38;
+
+      ctx.beginPath();
+      ctx.moveTo(pad, mid);
+      ctx.lineTo(pad + w * 0.25, mid);
+      ctx.lineTo(pad + w * 0.38, mid - h / 2);
+      ctx.lineTo(pad + w * 0.5, mid + h / 2);
+      ctx.lineTo(pad + w * 0.62, mid - h * 0.2);
+      ctx.lineTo(pad + w * 0.72, mid);
+      ctx.lineTo(pad + w, mid);
+      ctx.stroke();
+
+      return canvas;
+    }
+
+    const grid = document.getElementById('grid');
+
+    for (const size of sizes) {
+      const canvas = drawIcon(size);
+      const name = `icon${size}.png`;
+
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = name;
+      a.textContent = `↓ ${name}`;
+
+      const item = document.createElement('div');
+      item.className = 'item';
+      item.appendChild(canvas);
+      item.appendChild(a);
+      grid.appendChild(item);
+    }
+  </script>
+</body>
+</html>
