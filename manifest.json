@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Visualize Claude's context window — token counts, block structure, and priorities in real-time.",
 
-  "permissions": ["storage", "scripting", "activeTab"],
+  "permissions": ["storage", "activeTab"],
   "host_permissions": ["https://claude.ai/*"],
 
   "background": {
@@ -35,12 +35,5 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-
-  "web_accessible_resources": [
-    {
-      "resources": ["injected.js"],
-      "matches": ["https://claude.ai/*"]
-    }
-  ]
+  }
 }

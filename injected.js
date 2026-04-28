@@ -12,10 +12,16 @@
 
   const originalFetch = window.fetch.bind(window);
 
-  function looksLikeClaudePayload(obj) {
+  function looksLikeClaudePayload(obj, url) {
     if (!obj || typeof obj !== 'object') return false;
-    // Must have messages array or system prompt; common in Claude/OpenAI-style payloads
-    return Array.isArray(obj.messages) || typeof obj.system !== 'undefined';
+    // Standard Anthropic API format
+    if (Array.isArray(obj.messages) || typeof obj.system !== 'undefined') return true;
+    // Claude.ai frontend sends prompt text + conversation_id
+    if (typeof obj.prompt === 'string' && obj.prompt.length > 20) return true;
+    if (typeof obj.text === 'string' && obj.conversation_id) return true;
+    // Any request to a chat/completion/message endpoint
+    if (url && /\/(completion|append_message|chat|messages?)(\/|$|\?)/.test(url)) return true;
+    return false;
   }
 
   function broadcast(payload, url) {
@@ -86,7 +92,7 @@
               offset += c.length;
             }
             const parsed = JSON.parse(new TextDecoder().decode(merged));
-            if (looksLikeClaudePayload(parsed)) broadcast(parsed, url);
+            if (looksLikeClaudePayload(parsed, url)) broadcast(parsed, url);
           } catch {
             /* ignore parse errors */
           }
@@ -96,7 +102,7 @@
       }
     } else if (options.body) {
       const parsed = await tryReadBody(options.body);
-      if (parsed && looksLikeClaudePayload(parsed)) broadcast(parsed, url);
+      if (parsed && looksLikeClaudePayload(parsed, url)) broadcast(parsed, url);
     }
 
     return originalFetch(resource, passOptions);
@@ -119,7 +125,7 @@
       if (typeof body === 'string') {
         try {
           const parsed = JSON.parse(body);
-          if (looksLikeClaudePayload(parsed)) broadcast(parsed, _url);
+          if (looksLikeClaudePayload(parsed, _url)) broadcast(parsed, _url);
         } catch {
           /* not JSON */
         }

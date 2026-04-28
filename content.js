@@ -58,10 +58,11 @@ const CSS = `
 }
 
 .op-outer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  height: 100vh !important;
+  width: auto;
   z-index: 2147483647;
   display: flex;
   align-items: stretch;
@@ -91,6 +92,7 @@ const CSS = `
 /* ── Sidebar panel ── */
 .op-sidebar {
   width: 320px;
+  height: 100vh;
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
@@ -444,124 +446,6 @@ function fmtTime(ts) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-// ─── Context parser ───────────────────────────────────────────────────────────
-
-function parseContext(payload) {
-  const blocks = [];
-
-  // 1. System prompt
-  if (payload.system) {
-    const txt =
-      typeof payload.system === 'string'
-        ? payload.system
-        : Array.isArray(payload.system)
-        ? payload.system.map((s) => s.text ?? JSON.stringify(s)).join('\n')
-        : JSON.stringify(payload.system);
-
-    blocks.push({
-      id: 'system',
-      type: 'system',
-      label: 'System Prompt',
-      content: txt,
-      tokens: estimateTokens(txt),
-      priority: DEFAULT_PRIORITY.system,
-      pinned: true,
-      dropped: false,
-    });
-  }
-
-  // 2. Walk messages — separate turns from tool results
-  if (Array.isArray(payload.messages) && payload.messages.length > 0) {
-    const conversationParts = [];
-    const toolResultParts = [];
-
-    for (const msg of payload.messages) {
-      const role = msg.role;
-      const content = msg.content;
-
-      if (Array.isArray(content)) {
-        for (const part of content) {
-          if (part.type === 'tool_result') {
-            const inner =
-              typeof part.content === 'string'
-                ? part.content
-                : Array.isArray(part.content)
-                ? part.content.map((c) => c.text ?? JSON.stringify(c)).join('\n')
-                : JSON.stringify(part.content ?? '');
-            toolResultParts.push(inner);
-          } else if (part.type === 'text') {
-            conversationParts.push(`${role}: ${part.text}`);
-          } else if (part.type === 'tool_use') {
-            conversationParts.push(`assistant [tool_use:${part.name}]: ${JSON.stringify(part.input)}`);
-          } else {
-            conversationParts.push(`${role}: ${JSON.stringify(part)}`);
-          }
-        }
-      } else if (typeof content === 'string') {
-        conversationParts.push(`${role}: ${content}`);
-      }
-    }
-
-    // Conversation history block
-    if (conversationParts.length > 0) {
-      const txt = conversationParts.join('\n');
-      const turnCount = payload.messages.filter(
-        (m) => m.role === 'user' && (
-          typeof m.content === 'string' ||
-          (Array.isArray(m.content) && m.content.some((c) => c.type === 'text'))
-        )
-      ).length;
-
-      blocks.push({
-        id: 'conversation',
-        type: 'conversation',
-        label: 'Conversation History',
-        content: txt,
-        tokens: estimateTokens(txt),
-        priority: DEFAULT_PRIORITY.conversation,
-        pinned: false,
-        dropped: false,
-        meta: `${turnCount} turn${turnCount !== 1 ? 's' : ''} · ${payload.messages.length} message${payload.messages.length !== 1 ? 's' : ''}`,
-      });
-    }
-
-    // Tool results block
-    if (toolResultParts.length > 0) {
-      const txt = toolResultParts.join('\n─────\n');
-      blocks.push({
-        id: 'tool-results',
-        type: 'tool-results',
-        label: 'Tool Results',
-        content: txt,
-        tokens: estimateTokens(txt),
-        priority: DEFAULT_PRIORITY['tool-results'],
-        pinned: false,
-        dropped: false,
-        meta: `${toolResultParts.length} result${toolResultParts.length !== 1 ? 's' : ''}`,
-      });
-    }
-  }
-
-  // 3. Available tools
-  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
-    const txt = JSON.stringify(payload.tools);
-    blocks.push({
-      id: 'tools',
-      type: 'tools',
-      label: 'Available Tools',
-      content: txt,
-      tokens: estimateTokens(txt),
-      priority: DEFAULT_PRIORITY.tools,
-      pinned: false,
-      dropped: false,
-      meta: `${payload.tools.length} tool${payload.tools.length !== 1 ? 's' : ''}`,
-    });
-  }
-
-  // Apply persisted overrides (priority, pinned, dropped)
-  return blocks.map((b) => ({ ...b, ...(state.overrides[b.id] ?? {}) }));
-}
-
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 
 function el(tag, className, attrs = {}) {
@@ -800,16 +684,6 @@ function render() {
     }
   }
 
-  // Push stats to background
-  chrome.runtime.sendMessage({
-    type: 'stats-update',
-    stats: {
-      totalTokens,
-      blockCount: active.length,
-      model: state.model,
-      lastUpdated: state.lastUpdated,
-    },
-  }).catch(() => {});
 }
 
 // ─── Event handlers ───────────────────────────────────────────────────────────
@@ -852,29 +726,13 @@ function persistOverrides() {
   chrome.storage.local.set({ blockOverrides: state.overrides }).catch(() => {});
 }
 
-// ─── Context update handler ───────────────────────────────────────────────────
-
-function handleContextUpdate(payload) {
-  state.blocks = parseContext(payload);
-  state.lastUpdated = payload.timestamp;
-  state.model = payload.model;
-
-  // Flash token counter
-  const tokEl = shadow?.querySelector('.op-total-tokens');
-  if (tokEl) {
-    tokEl.classList.add('flash');
-    setTimeout(() => tokEl.classList.remove('flash'), 900);
-  }
-
-  render();
-}
-
 // ─── Sidebar DOM creation ─────────────────────────────────────────────────────
 
 function createSidebar() {
   const host = document.createElement('div');
   host.id = OP_ID;
-  document.body.appendChild(host);
+  host.style.cssText = 'position:fixed!important;top:0!important;right:0!important;width:0!important;height:0!important;overflow:visible!important;z-index:2147483647!important;pointer-events:none!important;';
+  document.documentElement.appendChild(host);
 
   shadow = host.attachShadow({ mode: 'open' });
 
@@ -934,30 +792,109 @@ function createSidebar() {
   render();
 }
 
-// ─── Inject page-context script ───────────────────────────────────────────────
-
-function injectPageScript() {
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('injected.js');
-  script.onload = () => script.remove();
-  (document.head ?? document.documentElement).appendChild(script);
-}
-
 // ─── Message listeners ────────────────────────────────────────────────────────
 
-window.addEventListener('message', (event) => {
-  if (
-    event.source === window &&
-    event.data?.source === 'openpane' &&
-    event.data?.type === 'context-update'
-  ) {
-    handleContextUpdate(event.data.payload);
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'toggle-sidebar') {
+    toggleCollapse();
+  } else if (message.type === 'get-stats') {
+    const active = activeBlocks();
+    sendResponse({
+      stats: active.length > 0 ? {
+        totalTokens: active.reduce((s, b) => s + b.tokens, 0),
+        blockCount: active.length,
+        model: state.model,
+        lastUpdated: state.lastUpdated,
+      } : null,
+    });
   }
+  return true;
 });
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'toggle-sidebar') toggleCollapse();
-});
+// ─── DOM reader ───────────────────────────────────────────────────────────────
+// Primary data source: Claude.ai renders all messages in the DOM.
+// We read them directly rather than relying on intercepted fetch payloads.
+
+const DOM = {
+  // Selectors confirmed from live DOM inspection of claude.ai.
+  user: [
+    '[data-testid="user-message"]',      // confirmed ✓
+    '[data-user-message-bubble="true"]', // outer bubble wrapper
+  ],
+  assistant: [
+    '.standard-markdown',                // confirmed ✓ — wraps full response content
+  ],
+};
+
+function queryFirst(selectors) {
+  for (const sel of selectors) {
+    const els = Array.from(document.querySelectorAll(sel));
+    if (els.length) return els;
+  }
+  return [];
+}
+
+function scrapeDOM() {
+  const userEls      = queryFirst(DOM.user);
+  const assistantEls = queryFirst(DOM.assistant);
+
+  if (!userEls.length && !assistantEls.length) return;
+
+  const all = [
+    ...userEls.map(el => ({ role: 'user', el })),
+    ...assistantEls.map(el => ({ role: 'assistant', el })),
+  ].sort((a, b) =>
+    a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+  );
+
+  const conversationText = all
+    .map(({ role, el }) => `${role}: ${el.innerText.trim()}`)
+    .join('\n\n');
+
+  if (!conversationText.trim()) return;
+
+  // Also try to sniff the model name from the page title or DOM
+  const modelEl =
+    document.querySelector('[data-testid="model-selector-button"]') ??
+    document.querySelector('[aria-label*="claude"]') ??
+    document.querySelector('button[data-testid*="model"]');
+  if (modelEl && !state.model) {
+    state.model = modelEl.textContent.trim() || null;
+  }
+
+  const convBlock = {
+    id: 'conversation',
+    type: 'conversation',
+    label: 'Conversation History',
+    content: conversationText,
+    tokens: estimateTokens(conversationText),
+    priority: 'medium',
+    pinned: false,
+    dropped: false,
+    meta: `${userEls.length} turn${userEls.length !== 1 ? 's' : ''} · ${all.length} message${all.length !== 1 ? 's' : ''}`,
+  };
+
+  // Merge with any blocks from fetch interception (system prompt, tools, etc.)
+  // keeping fetch-sourced blocks and replacing/adding the conversation block.
+  const fetchBlocks = state.blocks.filter(b => b.id !== 'conversation');
+  state.blocks = [
+    ...fetchBlocks,
+    { ...convBlock, ...(state.overrides['conversation'] ?? {}) },
+  ];
+  state.lastUpdated = Date.now();
+  render();
+}
+
+let domScrapeTimer = null;
+
+function setupDOMReader() {
+  const observer = new MutationObserver(() => {
+    clearTimeout(domScrapeTimer);
+    domScrapeTimer = setTimeout(scrapeDOM, 600);
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  scrapeDOM();
+}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -969,8 +906,8 @@ async function init() {
   state.collapsed = stored.collapsed ?? false;
   state.overrides = stored.blockOverrides ?? {};
 
-  injectPageScript();
   createSidebar();
+  setupDOMReader();
 }
 
 // Handle SPA navigations on claude.ai

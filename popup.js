@@ -109,8 +109,8 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     return;
   }
 
-  // Ask background for cached stats
-  chrome.runtime.sendMessage({ type: 'get-stats' }, (response) => {
+  // Query the content script directly — avoids service worker lifetime issues.
+  chrome.tabs.sendMessage(tab.id, { type: 'get-stats' }, (response) => {
     void chrome.runtime.lastError;
     renderStats(response?.stats ?? null);
   });
