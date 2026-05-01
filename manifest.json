@@ -43,7 +43,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["embed-worker.js"],
+      "resources": ["embed-worker.js", "injected.js"],
       "matches": ["https://claude.ai/*"]
     }
   ]

@@ -10,6 +10,13 @@
   if (window.__openPaneInjected) return;
   window.__openPaneInjected = true;
 
+  let blockState = [];
+  window.addEventListener('message', (e) => {
+    if (e.data?.source === 'openpane-content' && e.data.type === 'block-state') {
+      blockState = e.data.payload ?? [];
+    }
+  });
+
   const originalFetch = window.fetch.bind(window);
 
   function looksLikeClaudePayload(obj, url) {
@@ -22,6 +29,16 @@
     // Any request to a chat/completion/message endpoint
     if (url && /\/(completion|append_message|chat|messages?)(\/|$|\?)/.test(url)) return true;
     return false;
+  }
+
+  function applyBlockState(payload) {
+    if (!blockState.length || !Array.isArray(payload.messages)) return payload;
+    const dropped = new Set();
+    for (const block of blockState) {
+      if (block.dropped) block.indices.forEach(i => dropped.add(i));
+    }
+    if (!dropped.size) return payload;
+    return { ...payload, messages: payload.messages.filter((_, i) => !dropped.has(i)) };
   }
 
   function broadcast(payload, url) {
@@ -102,7 +119,13 @@
       }
     } else if (options.body) {
       const parsed = await tryReadBody(options.body);
-      if (parsed && looksLikeClaudePayload(parsed, url)) broadcast(parsed, url);
+      if (parsed && looksLikeClaudePayload(parsed, url)) {
+        broadcast(parsed, url);
+        const modified = applyBlockState(parsed);
+        if (modified !== parsed) {
+          passOptions = { ...options, body: JSON.stringify(modified) };
+        }
+      }
     }
 
     return originalFetch(resource, passOptions);

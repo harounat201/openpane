@@ -1,4 +1,4 @@
-# OpenPane
+# OpenPane - Keep what's important top of mind.
 
 A Chrome extension that gives you full visibility and control over Claude's context window — live token counts, semantic block structure, priority controls, and (planned) active context reconstruction.
 

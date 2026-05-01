@@ -482,6 +482,7 @@ const state = {
   allMessages: [],
   threshold: 0.525,
   modelStatus: 'idle',
+  lastInterceptedPayload: null,
 };
 
 let shadow      = null;  // ShadowRoot reference
@@ -554,6 +555,7 @@ function recomputeChunks() {
       priority,
       pinned:   false,
       dropped:  false,
+      indices,
     };
   });
 
@@ -833,6 +835,7 @@ function render() {
       <p>Send a message to Claude to see the context window breakdown.</p>
     `;
     blocksContainer.appendChild(empty);
+    pushBlockState();
     return;
   }
 
@@ -873,6 +876,7 @@ function render() {
     }
   }
 
+  pushBlockState();
 }
 
 // ─── Event handlers ───────────────────────────────────────────────────────────
@@ -929,6 +933,28 @@ function injectPageStyle() {
 
 function persistOverrides() {
   chrome.storage.local.set({ blockOverrides: state.overrides }).catch(() => {});
+}
+
+function injectPageScript() {
+  if (document.getElementById('openpane-injected-script')) return;
+  const s = document.createElement('script');
+  s.id = 'openpane-injected-script';
+  s.src = chrome.runtime.getURL('injected.js');
+  (document.head || document.documentElement).appendChild(s);
+}
+
+function pushBlockState() {
+  window.postMessage({
+    source: 'openpane-content',
+    type: 'block-state',
+    payload: state.blocks.map(b => ({
+      id:       b.id,
+      dropped:  !!b.dropped,
+      priority: b.priority,
+      pinned:   !!b.pinned,
+      indices:  b.indices ?? [],
+    })),
+  }, '*');
 }
 
 // ─── Sidebar DOM creation ─────────────────────────────────────────────────────
@@ -1049,6 +1075,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+window.addEventListener('message', (e) => {
+  if (e.data?.source !== 'openpane') return;
+  if (e.data.type === 'context-update') {
+    state.lastInterceptedPayload = e.data.payload;
+  }
+});
+
 // ─── DOM reader ───────────────────────────────────────────────────────────────
 // Primary data source: Claude.ai renders all messages in the DOM.
 // We read them directly rather than relying on intercepted fetch payloads.
@@ -1128,6 +1161,7 @@ function scrapeDOM() {
     priority: recencyPriority(total - 1 - idx),
     pinned:   false,
     dropped:  false,
+    indices:  [idx],
   }));
   state.blocks      = blocks.map(b => ({ ...b, ...(state.overrides[b.id] ?? {}) }));
   state.lastUpdated = Date.now();
@@ -1174,6 +1208,7 @@ async function init() {
 
   injectPageStyle();
   updatePageLayout();
+  injectPageScript();
   createSidebar();
   setupWorker();
   setupDOMReader();
