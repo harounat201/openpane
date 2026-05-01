@@ -1,0 +1,15 @@
+{
+  "name": "openpane",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5"
+  }
+}
