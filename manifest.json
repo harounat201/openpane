@@ -5,7 +5,11 @@
   "description": "Visualize Claude's context window — token counts, block structure, and priorities in real-time.",
 
   "permissions": ["storage", "activeTab"],
-  "host_permissions": ["https://claude.ai/*"],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "https://*.huggingface.co/*",
+    "https://cdn.jsdelivr.net/*"
+  ],
 
   "background": {
     "service_worker": "background.js"
@@ -35,5 +39,12 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["embed-worker.js"],
+      "matches": ["https://claude.ai/*"]
+    }
+  ]
 }

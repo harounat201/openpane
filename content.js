@@ -409,6 +409,63 @@ const CSS = `
   transition: background var(--transition);
 }
 .op-show-dropped:hover { background: var(--accent-bg); }
+
+/* ── Semantic chunking controls ── */
+.op-chunking {
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.op-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.op-slider-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.op-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.op-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(99,102,241,0.4);
+}
+.op-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid white;
+}
+.op-model-status {
+  font-size: 10px;
+  color: var(--text-subtle);
+  text-align: center;
+  margin-top: 5px;
+}
+.op-model-status.loading { color: var(--medium); }
+.op-model-status.ready   { color: #22c55e; }
+.op-model-status.error   { color: var(--high); }
 `;
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -420,12 +477,16 @@ const state = {
   dragSrcIndex: null,
   lastUpdated: null,
   model: null,
-  // persisted overrides: { [blockId]: { priority, pinned, dropped } }
   overrides: {},
+  embedCache: [],
+  allMessages: [],
+  threshold: 0.525,
+  modelStatus: 'idle',
 };
 
-let shadow = null;   // ShadowRoot reference
-let outer = null;    // .op-outer element
+let shadow      = null;  // ShadowRoot reference
+let outer       = null;  // .op-outer element
+let embedWorker = null;
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 
@@ -444,6 +505,134 @@ function fmtTime(ts) {
   if (!ts) return 'Never';
   const d = new Date(ts);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// ─── Semantic chunking ────────────────────────────────────────────────────────
+
+function cosineSim(a, b) {
+  // Embeddings are L2-normalised by the model, so dot product = cosine similarity
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+}
+
+function recomputeChunks() {
+  const msgs = state.allMessages;
+  if (!msgs.length) return;
+
+  const n = msgs.length;
+  const chunks = [];
+  let current = [0];
+
+  for (let i = 1; i < n; i++) {
+    const a = state.embedCache[i - 1];
+    const b = state.embedCache[i];
+    const boundary = (!a || !b) || cosineSim(a, b) < state.threshold;
+    if (boundary) { chunks.push(current); current = [i]; }
+    else          { current.push(i); }
+  }
+  chunks.push(current);
+
+  const totalChunks = chunks.length;
+
+  const blocks = chunks.map((indices, chunkIdx) => {
+    const firstMsg  = msgs[indices[0]];
+    const tokens    = indices.reduce((s, i) => s + estimateTokens(msgs[i].text), 0);
+    const fromEnd   = totalChunks - 1 - chunkIdx;
+    const priority  = fromEnd === 0 ? 'high' : fromEnd <= 2 ? 'medium' : 'low';
+    const turnCount = indices.length;
+    const label     = turnCount === 1
+      ? (firstMsg.role === 'user' ? `You · Turn ${indices[0] + 1}` : `Claude · Turn ${indices[0] + 1}`)
+      : `Topic ${chunkIdx + 1} · ${turnCount} turns`;
+
+    return {
+      id:       firstMsg.id,
+      type:     'conversation',
+      label,
+      content:  firstMsg.text.slice(0, 200),
+      tokens,
+      priority,
+      pinned:   false,
+      dropped:  false,
+    };
+  });
+
+  state.blocks      = blocks.map(b => ({ ...b, ...(state.overrides[b.id] ?? {}) }));
+  state.lastUpdated = Date.now();
+  render();
+}
+
+function requestEmbeddings() {
+  if (!embedWorker || state.modelStatus !== 'ready') return;
+  // Find the first message without a cached embedding and send from there to the end
+  let startIdx = -1;
+  for (let i = 0; i < state.allMessages.length; i++) {
+    if (!state.embedCache[i]) { startIdx = i; break; }
+  }
+  if (startIdx === -1) return;
+  const texts = state.allMessages.slice(startIdx).map(m => m.text);
+  embedWorker.postMessage({ type: 'embed', texts, startIdx });
+}
+
+function updateModelStatus(status, text) {
+  const el = shadow?.querySelector('.op-model-status');
+  if (!el) return;
+  el.className = 'op-model-status' + (status ? ' ' + status : '');
+  el.textContent = text;
+}
+
+async function setupWorker() {
+  if (embedWorker) return; // already running from a previous init
+
+  // Content scripts run in the page origin, so `new Worker(chrome-extension:// URL)`
+  // is blocked. Fetch the script text and create a same-origin blob: URL instead.
+  const workerUrl = chrome.runtime.getURL('embed-worker.js');
+  try {
+    const resp = await fetch(workerUrl);
+    const text = await resp.text();
+    const blobUrl = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+    embedWorker = new Worker(blobUrl);
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    state.modelStatus = 'error';
+    updateModelStatus('error', 'Worker failed — showing per-turn');
+    return;
+  }
+
+  embedWorker.onmessage = ({ data }) => {
+    switch (data.type) {
+      case 'loading':
+        updateModelStatus('loading', 'Loading semantic model…');
+        break;
+      case 'progress':
+        updateModelStatus('loading', `Loading model… ${data.progress}%`);
+        break;
+      case 'ready':
+        state.modelStatus = 'ready';
+        updateModelStatus('ready', 'Semantic chunking active');
+        requestEmbeddings();
+        break;
+      case 'embeddings': {
+        const { startIdx, embeddings } = data;
+        embeddings.forEach((emb, i) => { state.embedCache[startIdx + i] = emb; });
+        recomputeChunks();
+        break;
+      }
+      case 'error':
+        state.modelStatus = 'error';
+        updateModelStatus('error', 'Model unavailable — showing per-turn');
+        break;
+    }
+  };
+
+  embedWorker.onerror = () => {
+    state.modelStatus = 'error';
+    updateModelStatus('error', 'Worker failed — showing per-turn');
+  };
+
+  state.modelStatus = 'loading';
+  updateModelStatus('loading', 'Loading semantic model…');
+  embedWorker.postMessage({ type: 'init' });
 }
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
@@ -719,7 +908,23 @@ function onDropToggle(blockId) {
 function toggleCollapse() {
   state.collapsed = !state.collapsed;
   chrome.storage.local.set({ collapsed: state.collapsed }).catch(() => {});
+  updatePageLayout();
   render();
+}
+
+function updatePageLayout() {
+  document.documentElement.classList.toggle('openpane-open', !state.collapsed);
+}
+
+function injectPageStyle() {
+  if (document.getElementById('openpane-page-style')) return;
+  const style = document.createElement('style');
+  style.id = 'openpane-page-style';
+  style.textContent = `
+    body { transition: margin-right 0.18s cubic-bezier(0.4,0,0.2,1) !important; }
+    html.openpane-open body { margin-right: 320px !important; }
+  `;
+  document.head.appendChild(style);
 }
 
 function persistOverrides() {
@@ -771,6 +976,39 @@ function createSidebar() {
   tokTotal.textContent = '0 tok';
   header.appendChild(tokTotal);
   sidebar.appendChild(header);
+
+  // Semantic chunking controls
+  const chunking = el('div', 'op-chunking');
+  const sliderRow = el('div', 'op-slider-row');
+
+  const fineLabel = el('span', 'op-slider-label');
+  fineLabel.textContent = 'Fine';
+  sliderRow.appendChild(fineLabel);
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.className = 'op-slider';
+  slider.min = '0';
+  slider.max = '100';
+  slider.value = '50';
+  slider.title = 'Chunking granularity — Fine: many small topic chunks · Coarse: fewer large chunks';
+  slider.addEventListener('input', () => {
+    state.threshold = 0.85 - (parseInt(slider.value, 10) / 100) * 0.65;
+    if (state.modelStatus === 'ready') recomputeChunks();
+  });
+  sliderRow.appendChild(slider);
+
+  const coarseLabel = el('span', 'op-slider-label');
+  coarseLabel.textContent = 'Coarse';
+  sliderRow.appendChild(coarseLabel);
+
+  chunking.appendChild(sliderRow);
+
+  const modelStatusEl = el('div', 'op-model-status loading');
+  modelStatusEl.textContent = 'Loading semantic model…';
+  chunking.appendChild(modelStatusEl);
+
+  sidebar.appendChild(chunking);
 
   // Blocks list
   const blocksList = el('div', 'op-blocks');
@@ -841,59 +1079,87 @@ function scrapeDOM() {
   if (!userEls.length && !assistantEls.length) return;
 
   const all = [
-    ...userEls.map(el => ({ role: 'user', el })),
-    ...assistantEls.map(el => ({ role: 'assistant', el })),
+    ...userEls.map((domEl, i) => ({ role: 'user',      domEl, roleIdx: i })),
+    ...assistantEls.map((domEl, i) => ({ role: 'assistant', domEl, roleIdx: i })),
   ].sort((a, b) =>
-    a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    a.domEl.compareDocumentPosition(b.domEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
   );
 
-  const conversationText = all
-    .map(({ role, el }) => `${role}: ${el.innerText.trim()}`)
-    .join('\n\n');
+  const modelEl = document.querySelector('[data-testid="model-selector-button"]')
+    ?? document.querySelector('button[data-testid*="model"]');
+  if (modelEl && !state.model) state.model = modelEl.textContent.trim() || null;
 
-  if (!conversationText.trim()) return;
+  const newMessages = all.map(({ role, domEl, roleIdx }) => ({
+    id:   `${role}-${roleIdx}`,
+    role,
+    text: domEl.innerText.trim(),
+  }));
 
-  // Also try to sniff the model name from the page title or DOM
-  const modelEl =
-    document.querySelector('[data-testid="model-selector-button"]') ??
-    document.querySelector('[aria-label*="claude"]') ??
-    document.querySelector('button[data-testid*="model"]');
-  if (modelEl && !state.model) {
-    state.model = modelEl.textContent.trim() || null;
+  const changed = newMessages.length !== state.allMessages.length
+    || newMessages.some((m, i) => m.id !== state.allMessages[i]?.id);
+
+  if (changed) {
+    const oldCache = Object.fromEntries(
+      state.allMessages.map((m, i) => [m.id, state.embedCache[i] ?? null])
+    );
+    state.allMessages = newMessages;
+    state.embedCache  = newMessages.map(m => oldCache[m.id] ?? null);
+    requestEmbeddings();
   }
 
-  const convBlock = {
-    id: 'conversation',
-    type: 'conversation',
-    label: 'Conversation History',
-    content: conversationText,
-    tokens: estimateTokens(conversationText),
-    priority: 'medium',
-    pinned: false,
-    dropped: false,
-    meta: `${userEls.length} turn${userEls.length !== 1 ? 's' : ''} · ${all.length} message${all.length !== 1 ? 's' : ''}`,
-  };
+  // Use semantic chunks when ready and all messages are embedded; otherwise per-turn fallback
+  if (state.modelStatus === 'ready' && state.embedCache.every(Boolean)) {
+    recomputeChunks();
+    return;
+  }
 
-  // Merge with any blocks from fetch interception (system prompt, tools, etc.)
-  // keeping fetch-sourced blocks and replacing/adding the conversation block.
-  const fetchBlocks = state.blocks.filter(b => b.id !== 'conversation');
-  state.blocks = [
-    ...fetchBlocks,
-    { ...convBlock, ...(state.overrides['conversation'] ?? {}) },
-  ];
+  const total = newMessages.length;
+  function recencyPriority(distFromEnd) {
+    if (distFromEnd <= 1) return 'high';
+    if (distFromEnd <= 5) return 'medium';
+    return 'low';
+  }
+  const blocks = newMessages.map(({ id, role, text }, idx) => ({
+    id,
+    type:     role === 'user' ? 'conversation' : 'docs',
+    label:    role === 'user' ? `You · Turn ${Math.floor(idx / 2) + 1}` : `Claude · Turn ${Math.floor(idx / 2) + 1}`,
+    content:  text,
+    tokens:   estimateTokens(text),
+    priority: recencyPriority(total - 1 - idx),
+    pinned:   false,
+    dropped:  false,
+  }));
+  state.blocks      = blocks.map(b => ({ ...b, ...(state.overrides[b.id] ?? {}) }));
   state.lastUpdated = Date.now();
   render();
 }
 
-let domScrapeTimer = null;
+let domScrapeTimer    = null;
+let domScrapeMaxTimer = null;
+
+function scheduleScrape(delay = 600) {
+  clearTimeout(domScrapeTimer);
+  // Max-wait: fire after at most 2s even if mutations keep resetting the debounce
+  if (!domScrapeMaxTimer) {
+    domScrapeMaxTimer = setTimeout(() => {
+      domScrapeMaxTimer = null;
+      clearTimeout(domScrapeTimer);
+      domScrapeTimer = null;
+      scrapeDOM();
+    }, 2000);
+  }
+  domScrapeTimer = setTimeout(() => {
+    clearTimeout(domScrapeMaxTimer);
+    domScrapeMaxTimer = null;
+    scrapeDOM();
+  }, delay);
+}
 
 function setupDOMReader() {
-  const observer = new MutationObserver(() => {
-    clearTimeout(domScrapeTimer);
-    domScrapeTimer = setTimeout(scrapeDOM, 600);
-  });
+  const observer = new MutationObserver(() => scheduleScrape());
   observer.observe(document.body, { childList: true, subtree: true });
-  scrapeDOM();
+  scrapeDOM();           // immediate pass — catches pages that are already rendered
+  scheduleScrape(1500);  // delayed pass — catches SPA content that renders after document_idle
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -906,7 +1172,10 @@ async function init() {
   state.collapsed = stored.collapsed ?? false;
   state.overrides = stored.blockOverrides ?? {};
 
+  injectPageStyle();
+  updatePageLayout();
   createSidebar();
+  setupWorker();
   setupDOMReader();
 }
 
@@ -915,13 +1184,24 @@ let lastUrl = location.href;
 new MutationObserver(() => {
   if (location.href !== lastUrl) {
     lastUrl = location.href;
-    // Re-inject if the sidebar host was removed during navigation
+
+    // Always reset conversation state on navigation
+    state.blocks      = [];
+    state.lastUpdated = null;
+    state.model       = null;
+    state.allMessages = [];
+    state.embedCache  = [];
+
+    // Re-inject sidebar if it was removed
     if (!document.getElementById(OP_ID)) {
-      state.blocks = [];
-      state.lastUpdated = null;
-      state.model = null;
       createSidebar();
+      setupWorker();
+    } else {
+      render(); // show empty state while new page content loads
     }
+
+    // Wait for the new conversation to render before scraping
+    scheduleScrape(1500);
   }
 }).observe(document.body, { childList: true, subtree: true });
 
